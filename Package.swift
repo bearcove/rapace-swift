@@ -50,5 +50,9 @@ let package = Package(
             name: "GeneratedTest",
             dependencies: ["Rapace", "Postcard"]
         ),
+        .executableTarget(
+            name: "VfsTest",
+            dependencies: ["Rapace", "Postcard", "GeneratedTest"]
+        ),
     ]
 )
