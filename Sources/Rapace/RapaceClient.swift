@@ -29,9 +29,34 @@ public actor RapaceClient {
     private var nextMsgId: UInt64 = 1
     private var nextChannelId: UInt32 = 1
 
+    /// Serial queue to ensure only one RPC call is in-flight at a time.
+    /// This prevents actor reentrancy from causing request/response mismatches.
+    private var callInProgress: Bool = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
     public init(host: String, port: UInt16) async throws {
         self.connection = TCPConnection()
         try await connection.connect(host: host, port: port)
+    }
+
+    /// Acquire the call lock - waits if another call is in progress
+    private func acquireCallLock() async {
+        if callInProgress {
+            await withCheckedContinuation { continuation in
+                waiters.append(continuation)
+            }
+        }
+        callInProgress = true
+    }
+
+    /// Release the call lock - resumes the next waiting caller if any
+    private func releaseCallLock() {
+        if let next = waiters.first {
+            waiters.removeFirst()
+            next.resume()
+        } else {
+            callInProgress = false
+        }
     }
 
     /// Close the connection
@@ -41,6 +66,10 @@ public actor RapaceClient {
 
     /// Call an RPC method with raw request bytes, returning raw response bytes
     public func call(methodId: UInt32, requestPayload: [UInt8]) async throws -> [UInt8] {
+        // Acquire lock to prevent actor reentrancy from interleaving requests/responses
+        await acquireCallLock()
+        defer { releaseCallLock() }
+
         // Debug: log the call
         let reqHex = requestPayload.map { String(format: "%02x", $0) }.joined(separator: " ")
         print("[RapaceClient] call methodId=0x\(String(methodId, radix: 16)), request=[\(reqHex)]")
