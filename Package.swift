@@ -46,5 +46,9 @@ let package = Package(
             name: "RPCTest",
             dependencies: ["Rapace", "Postcard"]
         ),
+        .target(
+            name: "GeneratedTest",
+            dependencies: ["Rapace", "Postcard"]
+        ),
     ]
 )
