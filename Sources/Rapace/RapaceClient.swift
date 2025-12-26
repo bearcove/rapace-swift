@@ -23,61 +23,135 @@ public enum RapaceError: Error, CustomStringConvertible {
     }
 }
 
-/// A rapace RPC client over TCP
+/// Result of an RPC call - either payload bytes or an error
+private enum CallResult {
+    case success([UInt8])
+    case error(RapaceError)
+}
+
+/// A rapace RPC client over TCP with proper request/response multiplexing
 public actor RapaceClient {
     private let connection: TCPConnection
     private var nextMsgId: UInt64 = 1
     private var nextChannelId: UInt32 = 1
 
-    /// Serial queue to ensure only one RPC call is in-flight at a time.
-    /// This prevents actor reentrancy from causing request/response mismatches.
-    private var callInProgress: Bool = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    /// Pending requests waiting for responses, keyed by msgId
+    private var pendingRequests: [UInt64: CheckedContinuation<CallResult, Never>] = [:]
+
+    /// Reader task that continuously reads responses and dispatches them
+    private var readerTask: Task<Void, Never>?
+
+    /// Whether the client is still running
+    private var isRunning: Bool = true
 
     public init(host: String, port: UInt16) async throws {
         self.connection = TCPConnection()
         try await connection.connect(host: host, port: port)
-    }
 
-    /// Acquire the call lock - waits if another call is in progress
-    private func acquireCallLock() async {
-        if callInProgress {
-            await withCheckedContinuation { continuation in
-                waiters.append(continuation)
-            }
-        }
-        callInProgress = true
-    }
-
-    /// Release the call lock - resumes the next waiting caller if any
-    private func releaseCallLock() {
-        if let next = waiters.first {
-            waiters.removeFirst()
-            next.resume()
-        } else {
-            callInProgress = false
+        // Start the reader task
+        readerTask = Task { [weak self] in
+            await self?.readLoop()
         }
     }
 
     /// Close the connection
     public func close() async {
+        isRunning = false
+        readerTask?.cancel()
         await connection.close()
+
+        // Fail all pending requests
+        for (_, continuation) in pendingRequests {
+            continuation.resume(returning: .error(.connectionFailed("Client closed")))
+        }
+        pendingRequests.removeAll()
+    }
+
+    /// Read loop that continuously reads frames and dispatches to waiting callers
+    private func readLoop() async {
+        while isRunning && !Task.isCancelled {
+            do {
+                // Read frame length (4 bytes)
+                let respLenData = try await connection.receive(exactly: 4)
+                let respLen = respLenData.withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }
+
+                // Read the rest of the frame
+                let respFrame = try await connection.receive(exactly: Int(respLen))
+
+                // Parse response descriptor (first 64 bytes)
+                guard respFrame.count >= 64 else {
+                    print("[RapaceClient] Response frame too short: \(respFrame.count) bytes")
+                    continue
+                }
+
+                let respDesc = try MsgDescHot(from: respFrame.prefix(64))
+                let msgId = respDesc.msgId
+
+                // Find the pending request for this msgId
+                guard let continuation = pendingRequests.removeValue(forKey: msgId) else {
+                    print("[RapaceClient] Received response for unknown msgId: \(msgId)")
+                    continue
+                }
+
+                // Check for error flag
+                if respDesc.flags.contains(.error) {
+                    continuation.resume(returning: .error(.serverError("Server returned error flag")))
+                    continue
+                }
+
+                // Extract payload
+                let payloadLen = Int(respDesc.payloadLen)
+                if payloadLen == 0 {
+                    continuation.resume(returning: .success([]))
+                    continue
+                }
+
+                let result: [UInt8]
+                if respDesc.isInline {
+                    // Payload is in inline_payload field
+                    result = Array(respDesc.inlinePayloadData.prefix(payloadLen))
+                } else {
+                    // Payload is after the 64-byte descriptor
+                    let payloadStart = 64
+                    let payloadEnd = payloadStart + payloadLen
+                    guard respFrame.count >= payloadEnd else {
+                        continuation.resume(returning: .error(.invalidResponse("Response payload truncated")))
+                        continue
+                    }
+                    result = Array(respFrame[payloadStart..<payloadEnd])
+                }
+
+                // Debug: log the response
+                let respHex = result.map { String(format: "%02x", $0) }.joined(separator: " ")
+                print("[RapaceClient] response msgId=\(msgId) payload (\(result.count) bytes): [\(respHex)]")
+
+                continuation.resume(returning: .success(result))
+
+            } catch {
+                if isRunning {
+                    print("[RapaceClient] Read error: \(error)")
+                }
+                // On error, fail all pending requests and stop
+                for (_, continuation) in pendingRequests {
+                    continuation.resume(returning: .error(.receiveFailed(error.localizedDescription)))
+                }
+                pendingRequests.removeAll()
+                break
+            }
+        }
     }
 
     /// Call an RPC method with raw request bytes, returning raw response bytes
     public func call(methodId: UInt32, requestPayload: [UInt8]) async throws -> [UInt8] {
-        // Acquire lock to prevent actor reentrancy from interleaving requests/responses
-        await acquireCallLock()
-        defer { releaseCallLock() }
-
-        // Debug: log the call
-        let reqHex = requestPayload.map { String(format: "%02x", $0) }.joined(separator: " ")
-        print("[RapaceClient] call methodId=0x\(String(methodId, radix: 16)), request=[\(reqHex)]")
         // Allocate message and channel IDs
         let msgId = nextMsgId
         nextMsgId += 1
         let channelId = nextChannelId
         nextChannelId += 1
+
+        // Debug: log the call
+        let reqHex = requestPayload.map { String(format: "%02x", $0) }.joined(separator: " ")
+        print("[RapaceClient] call msgId=\(msgId) methodId=0x\(String(methodId, radix: 16)), request=[\(reqHex)]")
 
         // Build the request descriptor
         var desc = MsgDescHot()
@@ -105,53 +179,40 @@ public actor RapaceClient {
             frame.append(contentsOf: requestPayload)
         }
 
-        // Send the frame
-        try await connection.send(frame)
+        // Register our continuation BEFORE sending to avoid race with reader
+        let result: CallResult = await withCheckedContinuation { continuation in
+            pendingRequests[msgId] = continuation
 
-        // Read response: first 4 bytes for length
-        let respLenData = try await connection.receive(exactly: 4)
-        let respLen = respLenData.withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }
-
-        // Read the rest of the frame
-        let respFrame = try await connection.receive(exactly: Int(respLen))
-
-        // Parse response descriptor (first 64 bytes)
-        guard respFrame.count >= 64 else {
-            throw RapaceError.invalidResponse("Response frame too short: \(respFrame.count) bytes")
-        }
-
-        let respDesc = try MsgDescHot(from: respFrame.prefix(64))
-
-        // Check for error flag
-        if respDesc.flags.contains(.error) {
-            throw RapaceError.serverError("Server returned error flag")
-        }
-
-        // Extract payload
-        let payloadLen = Int(respDesc.payloadLen)
-        if payloadLen == 0 {
-            print("[RapaceClient] response payload empty")
-            return []
-        }
-
-        let result: [UInt8]
-        if respDesc.isInline {
-            // Payload is in inline_payload field
-            result = Array(respDesc.inlinePayloadData.prefix(payloadLen))
-        } else {
-            // Payload is after the 64-byte descriptor
-            let payloadStart = 64
-            let payloadEnd = payloadStart + payloadLen
-            guard respFrame.count >= payloadEnd else {
-                throw RapaceError.invalidResponse("Response payload truncated")
+            // Send must happen after registering, but we can't await here
+            // So we spawn a task to send
+            Task {
+                do {
+                    try await self.sendFrame(frame)
+                } catch {
+                    // If send fails, remove from pending and resume with error
+                    await self.handleSendError(msgId: msgId, error: error)
+                }
             }
-            result = Array(respFrame[payloadStart..<payloadEnd])
         }
 
-        // Debug: log the response
-        let respHex = result.map { String(format: "%02x", $0) }.joined(separator: " ")
-        print("[RapaceClient] response payload (\(result.count) bytes): [\(respHex)]")
-        return result
+        switch result {
+        case .success(let bytes):
+            return bytes
+        case .error(let error):
+            throw error
+        }
+    }
+
+    /// Send a frame (separate method to be called from task)
+    private func sendFrame(_ frame: Data) async throws {
+        try await connection.send(frame)
+    }
+
+    /// Handle send error by failing the pending request
+    private func handleSendError(msgId: UInt64, error: Error) {
+        if let continuation = pendingRequests.removeValue(forKey: msgId) {
+            continuation.resume(returning: .error(.sendFailed(error.localizedDescription)))
+        }
     }
 }
 
