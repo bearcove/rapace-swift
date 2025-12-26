@@ -1,0 +1,37 @@
+// swift-tools-version: 5.9
+
+import PackageDescription
+
+let package = Package(
+    name: "Rapace",
+    platforms: [
+        .macOS(.v13),
+        .iOS(.v16),
+    ],
+    products: [
+        .library(
+            name: "Rapace",
+            targets: ["Rapace"]
+        ),
+        .library(
+            name: "Postcard",
+            targets: ["Postcard"]
+        ),
+        .executable(
+            name: "TCPTest",
+            targets: ["TCPTest"]
+        ),
+    ],
+    targets: [
+        .target(
+            name: "Rapace"
+        ),
+        .target(
+            name: "Postcard"
+        ),
+        .executableTarget(
+            name: "TCPTest",
+            dependencies: ["Rapace"]
+        ),
+    ]
+)
