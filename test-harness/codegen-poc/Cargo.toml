@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Core rapace for registry access and macro
-rapace = { path = "../../../rapace/crates/rapace", default-features = false }
+rapace = { git = "https://github.com/bearcove/rapace", branch = "main", default-features = false }
 
 # facet-core for Shape introspection
 facet-core = { git = "https://github.com/facet-rs/facet", branch = "main" }

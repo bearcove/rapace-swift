@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rapace-core = { path = "../../../rapace/crates/rapace-core" }
+rapace-core = { git = "https://github.com/bearcove/rapace", branch = "main" }
