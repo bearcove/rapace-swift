@@ -28,7 +28,8 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "Rapace"
+            name: "Rapace",
+            dependencies: ["Postcard"]
         ),
         .target(
             name: "Postcard"
@@ -40,6 +41,10 @@ let package = Package(
         .executableTarget(
             name: "StructTest",
             dependencies: ["Postcard"]
+        ),
+        .executableTarget(
+            name: "RPCTest",
+            dependencies: ["Rapace", "Postcard"]
         ),
     ]
 )
