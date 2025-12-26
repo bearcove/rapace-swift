@@ -266,12 +266,19 @@ public actor VfsClient {
     public func getAttributes(_ item_id: UInt64) async throws -> GetAttributesResult {
         var encoder = PostcardEncoder()
         encoder.encode(item_id)
-        
+
         let response = try await client.call(methodId: 0x7DFD6287, requestPayload: encoder.bytes)
-        
+
+        // Debug: print raw bytes
+        let hexDump = response.map { String(format: "%02x", $0) }.joined(separator: " ")
+        print("[getAttributes] Response (\(response.count) bytes): \(hexDump)")
+
         var responseData = Data(response)
         let attrs_item_id = UInt64(try decodeVarint(from: &responseData))
+        print("[getAttributes] Decoded item_id: \(attrs_item_id)")
+
         let attrs_item_type_index = try decodeVarint(from: &responseData)
+        print("[getAttributes] Decoded item_type_index: \(attrs_item_type_index)")
         let attrs_item_type: ItemType
         switch attrs_item_type_index {
         case 0:

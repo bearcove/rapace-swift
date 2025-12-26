@@ -192,7 +192,7 @@ impl SwiftCodegen {
         // Clean up the name (remove module path)
         let swift_name = clean_type_name(name);
 
-        self.writeln(&format!("public struct {}: PostcardEncodable {{", swift_name));
+        self.writeln(&format!("public struct {}: PostcardEncodable, Sendable {{", swift_name));
         self.indent += 1;
 
         // Generate fields
@@ -241,7 +241,7 @@ impl SwiftCodegen {
     ) {
         let swift_name = clean_type_name(name);
 
-        self.writeln(&format!("public enum {}: PostcardEncodable {{", swift_name));
+        self.writeln(&format!("public enum {}: PostcardEncodable, Sendable {{", swift_name));
         self.indent += 1;
 
         // Generate cases

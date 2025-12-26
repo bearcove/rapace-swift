@@ -41,6 +41,9 @@ public actor RapaceClient {
 
     /// Call an RPC method with raw request bytes, returning raw response bytes
     public func call(methodId: UInt32, requestPayload: [UInt8]) async throws -> [UInt8] {
+        // Debug: log the call
+        let reqHex = requestPayload.map { String(format: "%02x", $0) }.joined(separator: " ")
+        print("[RapaceClient] call methodId=0x\(String(methodId, radix: 16)), request=[\(reqHex)]")
         // Allocate message and channel IDs
         let msgId = nextMsgId
         nextMsgId += 1
@@ -98,12 +101,14 @@ public actor RapaceClient {
         // Extract payload
         let payloadLen = Int(respDesc.payloadLen)
         if payloadLen == 0 {
+            print("[RapaceClient] response payload empty")
             return []
         }
 
+        let result: [UInt8]
         if respDesc.isInline {
             // Payload is in inline_payload field
-            return Array(respDesc.inlinePayloadData.prefix(payloadLen))
+            result = Array(respDesc.inlinePayloadData.prefix(payloadLen))
         } else {
             // Payload is after the 64-byte descriptor
             let payloadStart = 64
@@ -111,8 +116,13 @@ public actor RapaceClient {
             guard respFrame.count >= payloadEnd else {
                 throw RapaceError.invalidResponse("Response payload truncated")
             }
-            return Array(respFrame[payloadStart..<payloadEnd])
+            result = Array(respFrame[payloadStart..<payloadEnd])
         }
+
+        // Debug: log the response
+        let respHex = result.map { String(format: "%02x", $0) }.joined(separator: " ")
+        print("[RapaceClient] response payload (\(result.count) bytes): [\(respHex)]")
+        return result
     }
 }
 

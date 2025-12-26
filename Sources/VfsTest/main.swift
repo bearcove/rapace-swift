@@ -51,11 +51,22 @@ struct VfsTest {
             print("  OK\n")
 
             // Test 4: Get attributes
-            print("--- Test: getAttributes (hello.txt) ---")
+            print("--- Test: getAttributes (hello.txt, id=\(lookup.item_id)) ---")
             let attrs = try await client.getAttributes(lookup.item_id)
             print("  Error: \(attrs.error)")
             print("  Size: \(attrs.attrs.size) bytes")
             print("  Mode: 0o\(String(attrs.attrs.mode, radix: 8))")
+            print("  ItemType: \(attrs.attrs.item_type)")
+            print("  OK\n")
+
+            // Test 4b: Get attributes for ROOT (item_id=1) - this is what FSKit does
+            print("--- Test: getAttributes (ROOT, id=1) ---")
+            let rootAttrs = try await client.getAttributes(1)
+            print("  Error: \(rootAttrs.error)")
+            print("  ItemID: \(rootAttrs.attrs.item_id)")
+            print("  ItemType: \(rootAttrs.attrs.item_type)")
+            print("  Size: \(rootAttrs.attrs.size)")
+            print("  Mode: 0o\(String(rootAttrs.attrs.mode, radix: 8))")
             print("  OK\n")
 
             // Test 5: Read file contents
